@@ -1440,7 +1440,7 @@
     const vName = document.getElementById("rangeVoice")?.value;
     const cur   = rng.queue[rng.idx];
 
-    const u = new SpeechSynthesisUtterance(`${cur.ref}. ${cur.text}`);
+    const u = new SpeechSynthesisUtterance(cur.text);
     u.rate = rate;
     const v = rng.voices.find(x => x.name === vName) ||
               rng.voices.find(x => /ko-KR/i.test(x.lang)) ||
