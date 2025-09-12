@@ -14,6 +14,18 @@
   <!-- 앱 코드 -->
   <script src="firebaseConfig.js" defer></script>
   <script src="app.js" defer></script>
+
+  <!-- (선택) 최소 스타일 – 기존 styles.css가 있으면 생략 가능 -->
+  <style>
+    ._card{background:#1a2250;border:1px solid #2a3155;border-radius:12px;padding:12px;margin:10px 0}
+    ._row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    ._input{flex:1;min-width:260px;padding:8px 10px;border-radius:8px;border:1px solid #46507b;background:#0e1538;color:#eaf0ff}
+    ._btn{padding:8px 12px;border-radius:8px;border:1px solid #46507b;background:#18204d;color:#fff;cursor:pointer}
+    ._btn:hover{background:#1b2556}
+    #rangeVerses p{margin:6px 0;padding:4px 6px;border-radius:6px}
+    #rangeVerses p strong{color:#6ea8fe}
+    hr._sep{border:0;height:1px;background:#2a3155;margin:10px 0}
+  </style>
 </head>
 <body>
   <header>
@@ -23,5 +35,247 @@
   <main id="app">
     <!-- 로그인 후 loadMain()에서 내용이 동적으로 채워짐 -->
   </main>
+
+  <!-- =========================
+       [NEW] 구간 입력 + 본문 표시 + TTS (index.html만 추가)
+       ========================= -->
+  <script>
+  (() => {
+    let uiInstalled = false;
+    let voices = [];
+    let queue = [];   // {ref, text}[]
+    let idx = 0;
+    let bibleCache = null;
+
+    // 로그인 후 #app이 렌더되면 상단에 UI 삽입
+    function installUI() {
+      if (uiInstalled) return;
+      const app = document.getElementById('app');
+      if (!app) return;
+
+      const holder = document.createElement('section');
+      holder.id = 'rangeReader';
+      holder.className = '_card';
+      holder.innerHTML = `
+        <div class="_row">
+          <input id="rangeInput" class="_input"
+                 placeholder="예) 창세기 1:1~3 / 창세기 1:31~2:3 / 창세기 1~3 / 창세기 1장"/>
+          <button id="rangeLoadBtn" class="_btn">본문 불러오기</button>
+        </div>
+        <div class="_row" style="margin-top:8px">
+          <button id="rangePlay"  class="_btn">▶ 재생</button>
+          <button id="rangePause" class="_btn">⏸ 일시정지/재개</button>
+          <button id="rangeStop"  class="_btn">■ 정지</button>
+          <label style="margin-left:12px">속도
+            <select id="rangeRate">
+              <option value="0.9">0.9</option>
+              <option value="1" selected>1.0</option>
+              <option value="1.1">1.1</option>
+              <option value="1.2">1.2</option>
+            </select>
+          </label>
+          <label style="margin-left:12px">음성
+            <select id="rangeVoice"></select>
+          </label>
+        </div>
+        <hr class="_sep"/>
+        <div id="rangeVerses"></div>
+      `;
+      app.prepend(holder);
+      uiInstalled = true;
+
+      // 이벤트
+      document.getElementById('rangeLoadBtn').addEventListener('click', onLoadRange);
+      document.getElementById('rangePlay').addEventListener('click', ttsPlayAll);
+      document.getElementById('rangePause').addEventListener('click', ttsTogglePause);
+      document.getElementById('rangeStop').addEventListener('click', ttsStopAll);
+
+      // 음성 목록
+      if ('speechSynthesis' in window) {
+        const populate = () => {
+          voices = speechSynthesis.getVoices() || [];
+          const sel = document.getElementById('rangeVoice');
+          if (!sel) return;
+          const ko = voices.filter(v => /ko-KR/i.test(v.lang));
+          const rest = voices.filter(v => !/ko-KR/i.test(v.lang));
+          sel.innerHTML = '';
+          [...ko, ...rest].forEach(v => {
+            const opt = document.createElement('option');
+            opt.value = v.name;
+            opt.textContent = `${v.name} (${v.lang})`;
+            sel.appendChild(opt);
+          });
+          if (ko.length) sel.value = ko[0].name;
+        };
+        populate();
+        speechSynthesis.onvoiceschanged = populate;
+      }
+    }
+
+    // app 내용 변화를 감시해서 초기 1회 설치
+    const mo = new MutationObserver(() => {
+      if (document.getElementById('app')?.children.length && !uiInstalled) installUI();
+    });
+    window.addEventListener('DOMContentLoaded', () => {
+      const app = document.getElementById('app');
+      if (app) mo.observe(app, { childList: true, subtree: true });
+      // 이미 렌더되어 있으면 즉시 설치
+      if (app && app.children.length) installUI();
+    });
+
+    // ===== bible =====
+    async function getBible() {
+      if (bibleCache) return bibleCache;
+      bibleCache = await fetch('bible.json', { cache: 'force-cache' }).then(r => r.json());
+      return bibleCache;
+    }
+
+    // ===== 입력 파싱 =====
+    /*
+      지원:
+      - "성경 창세기 1:1~3"
+      - "창세기 1:31~2:3"
+      - "창세기 1~3"
+      - "창세기 1장 1절~3절" / "창세기 1장~3장" / "창세기 1장"
+      - "창세기 1"
+    */
+    function parseRange(input) {
+      let s = (input || '').trim();
+      s = s.replace(/^성경\s*/,'');
+      s = s.replace(/[：]/g, ':');
+      s = s.replace(/\s+/g, ' ');
+      s = s.replace(/장/g, ':');
+      s = s.replace(/절/g, '');
+
+      const m = /^([^\d]+)\s+(.+)$/.exec(s);
+      if (!m) return null;
+      const book = m[1].trim();
+      const rest = m[2].trim();
+
+      // 1) 동장 절범위 1:1~3
+      let mm = /^(\d+)\s*:\s*(\d+)\s*[~\-]\s*(\d+)$/.exec(rest);
+      if (mm) return { book, c1:+mm[1], v1:+mm[2], c2:+mm[1], v2:+mm[3] };
+
+      // 2) 장跨 절범위 1:31~2:3
+      mm = /^(\d+)\s*:\s*(\d+)\s*[~\-]\s*(\d+)\s*:\s*(\d+)$/.exec(rest);
+      if (mm) return { book, c1:+mm[1], v1:+mm[2], c2:+mm[3], v2:+mm[4] };
+
+      // 3) 장 범위 1~3
+      mm = /^(\d+)\s*[~\-]\s*(\d+)$/.exec(rest);
+      if (mm) return { book, c1:+mm[1], v1:1, c2:+mm[2], v2:Infinity };
+
+      // +) 한 장 1
+      mm = /^(\d+)$/.exec(rest);
+      if (mm) return { book, c1:+mm[1], v1:1, c2:+mm[1], v2:Infinity };
+
+      return null;
+    }
+
+    // 책키 해석 (bible.json의 키가 한글/영문/공백차이일 수 있음)
+    function resolveBookKey(bibleObj, rawName) {
+      if (bibleObj[rawName]) return rawName;
+      const norm = s => (s||'').replace(/\s+/g,'').toLowerCase();
+      const hit = Object.keys(bibleObj).find(k => norm(k) === norm(rawName));
+      return hit || rawName;
+    }
+
+    // 본문 수집
+    function collectVerses(bookObj, refs, title) {
+      const out = [];
+      const { c1, v1=1, c2, v2=Infinity } = refs;
+      for (let c=c1; c<=c2; c++) {
+        const ch = bookObj?.[String(c)];
+        if (!ch) continue;
+        const startV = (c===c1) ? v1 : 1;
+        const endV   = (c===c2) ? v2 : Infinity;
+        const nums = Object.keys(ch).map(n=>+n).filter(n=>n>=startV && n<=endV).sort((a,b)=>a-b);
+        nums.forEach(vn => {
+          const text = String(ch[String(vn)] || '').trim();
+          if (text) out.push({ ref: `${title} ${c}:${vn}`, text });
+        });
+      }
+      return out;
+    }
+
+    // 렌더
+    function render(list) {
+      const box = document.getElementById('rangeVerses');
+      if (!box) return;
+      if (!list.length) { box.innerHTML = '<p>본문이 없습니다.</p>'; return; }
+      box.innerHTML = list.map((v,i)=>`<p data-ridx="${i}"><strong>${v.ref}</strong> ${v.text}</p>`).join('');
+      highlight();
+    }
+    function highlight() {
+      const box = document.getElementById('rangeVerses');
+      if (!box) return;
+      [...box.querySelectorAll('p')].forEach(p => p.style.background='transparent');
+      const cur = box.querySelector(`p[data-ridx="${idx}"]`);
+      if (cur) {
+        cur.style.background = 'rgba(255,255,0,0.18)';
+        cur.scrollIntoView({ behavior:'smooth', block:'center' });
+      }
+    }
+
+    // 로드
+    async function onLoadRange() {
+      const val = (document.getElementById('rangeInput')?.value || '').trim();
+      if (!val) { alert('구간을 입력하세요. 예) 창세기 1:1~3 / 창세기 1:31~2:3 / 창세기 1~3 / 창세기 1장'); return; }
+      const refs = parseRange(val);
+      if (!refs) { alert('입력 형식을 확인하세요.'); return; }
+
+      const bible = await getBible();
+      const bookKey = resolveBookKey(bible, refs.book);
+      const bookObj = bible[bookKey];
+      if (!bookObj) { alert(`"${refs.book}"(을)를 찾을 수 없습니다.`); return; }
+
+      const verses = collectVerses(bookObj, refs, refs.book);
+      if (!verses.length) { alert('해당 구간의 본문이 없습니다.'); return; }
+
+      queue = verses;
+      idx = 0;
+      render(verses);
+    }
+
+    // ===== TTS =====
+    function ttsPlayAll() {
+      if (!queue.length) { alert('먼저 본문을 불러오세요.'); return; }
+      if (speechSynthesis.paused) { speechSynthesis.resume(); return; }
+      if (speechSynthesis.speaking) return;
+      idx = 0;
+      speakNext();
+    }
+    function speakNext() {
+      if (idx >= queue.length) { speechSynthesis.cancel(); return; }
+      const rate  = parseFloat(document.getElementById('rangeRate')?.value || '1') || 1;
+      const vName = document.getElementById('rangeVoice')?.value;
+      const cur   = queue[idx];
+
+      const u = new SpeechSynthesisUtterance(`${cur.ref}. ${cur.text}`);
+      u.rate = rate;
+
+      const v = voices.find(x => x.name === vName) ||
+                voices.find(x => /ko-KR/i.test(x.lang)) ||
+                voices[0];
+      if (v) u.voice = v;
+
+      u.onstart = () => highlight();
+      u.onend   = () => { if (!speechSynthesis.paused) { idx++; speakNext(); } };
+      u.onerror = () => { idx++; speakNext(); };
+
+      speechSynthesis.speak(u);
+    }
+    function ttsTogglePause() {
+      if (!speechSynthesis.speaking) return;
+      if (speechSynthesis.paused) speechSynthesis.resume();
+      else speechSynthesis.pause();
+    }
+    function ttsStopAll() {
+      speechSynthesis.cancel();
+      idx = 0;
+      highlight();
+    }
+  })();
+  </script>
+  <!-- ========================= /NEW ========================= -->
 </body>
 </html>
