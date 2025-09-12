@@ -1216,4 +1216,253 @@
     buildChapterGrid();
   }
 
+  /* =========================================================
+   * [ADD] 성경 구간 입력 + 본문 표시 + 듣기(TTS)
+   * - UI는 screen-app 상단에 동적으로 삽입
+   * - 본문 결과는 별도 컨테이너(#rangeVerses)에 렌더 (기존 verseText와 충돌 없음)
+   * - 입력형식:
+   *    1) "창세기 1:1~3"
+   *    2) "창세기 1:31~2:3"
+   *    3) "창세기 1~3"
+   *    (+) "창세기 1" (한 장)
+   * ========================================================= */
+  let rng = {
+    voices: [],
+    queue: [],     // {ref, text}[]
+    idx: 0,
+    uiInstalled: false,
+  };
+
+  // UI 동적 삽입
+  function installRangeUI() {
+    if (rng.uiInstalled) return;
+    if (!scrApp) return;
+    const holder = document.createElement("section");
+    holder.id = "rangeReader";
+    holder.className = "card";
+    holder.innerHTML = `
+      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
+        <input id="rangeInput" class="input"
+          placeholder="예) 창세기 1:1~3 / 창세기 1:31~2:3 / 창세기 1~3 / 창세기 1장" />
+        <button id="rangeLoadBtn" class="btn">본문 불러오기</button>
+      </div>
+      <div class="row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">
+        <button id="rangePlay"  class="btn">▶ 재생</button>
+        <button id="rangePause" class="btn">⏸ 일시정지/재개</button>
+        <button id="rangeStop"  class="btn">■ 정지</button>
+        <label style="margin-left:12px">속도
+          <select id="rangeRate">
+            <option value="0.9">0.9</option>
+            <option value="1" selected>1.0</option>
+            <option value="1.1">1.1</option>
+            <option value="1.2">1.2</option>
+          </select>
+        </label>
+        <label style="margin-left:12px">음성
+          <select id="rangeVoice"></select>
+        </label>
+      </div>
+      <hr class="sep"/>
+      <div id="rangeVerses"></div>
+    `;
+    // 읽기 순위가 있으면 그 위에, 없으면 화면 상단에
+    const rank = document.getElementById("rankBoard");
+    if (rank && rank.parentElement) rank.parentElement.insertBefore(holder, rank);
+    else scrApp.prepend(holder);
+
+    // 이벤트 연결
+    document.getElementById("rangeLoadBtn")?.addEventListener("click", onRangeLoad);
+    document.getElementById("rangePlay")?.addEventListener("click", rangePlayAll);
+    document.getElementById("rangePause")?.addEventListener("click", rangeTogglePause);
+    document.getElementById("rangeStop")?.addEventListener("click", rangeStopAll);
+
+    // 음성 목록 준비
+    if ("speechSynthesis" in window) {
+      const populate = () => {
+        rng.voices = speechSynthesis.getVoices() || [];
+        const sel = document.getElementById("rangeVoice");
+        if (!sel) return;
+        const ko = rng.voices.filter(v => /ko-KR/i.test(v.lang));
+        const rest = rng.voices.filter(v => !/ko-KR/i.test(v.lang));
+        sel.innerHTML = "";
+        [...ko, ...rest].forEach(v => {
+          const opt = document.createElement("option");
+          opt.value = v.name;
+          opt.textContent = `${v.name} (${v.lang})`;
+          sel.appendChild(opt);
+        });
+        if (ko.length) sel.value = ko[0].name;
+      };
+      populate();
+      speechSynthesis.onvoiceschanged = populate;
+    }
+
+    rng.uiInstalled = true;
+  }
+
+  // scrApp이 보여질 때 UI 설치 (로그인 후)
+  const obs = new MutationObserver(() => {
+    if (scrApp?.classList.contains("show")) installRangeUI();
+  });
+  if (scrApp) {
+    obs.observe(scrApp, { attributes: true, attributeFilter: ["class"] });
+    if (scrApp.classList.contains("show")) installRangeUI(); // 이미 보이는 경우
+  }
+
+  // ---------- 입력 파싱 ----------
+  function normalizeRangeInput(input) {
+    // "성경 " 제거, 전각 콜론 등 정리, '장/절' 한글 표기도 허용
+    let s = (input || "").trim();
+    s = s.replace(/^성경\s*/,'');
+    s = s.replace(/[：]/g, ':');
+    s = s.replace(/\s+/g, ' ');
+    s = s.replace(/장/g, ':');
+    s = s.replace(/절/g, '');
+
+    // [책] [나머지]
+    const m = /^([^\d]+)\s+(.+)$/.exec(s);
+    if (!m) return null;
+    const book = m[1].trim();
+    const rest = m[2].trim();
+
+    // 1) 같은 장 내 절범위: 1:1~3
+    let mm = /^(\d+)\s*:\s*(\d+)\s*[~\-]\s*(\d+)$/.exec(rest);
+    if (mm) return { book, c1:+mm[1], v1:+mm[2], c2:+mm[1], v2:+mm[3], mode:"same" };
+
+    // 2) 장跨 절범위: 1:31~2:3
+    mm = /^(\d+)\s*:\s*(\d+)\s*[~\-]\s*(\d+)\s*:\s*(\d+)$/.exec(rest);
+    if (mm) return { book, c1:+mm[1], v1:+mm[2], c2:+mm[3], v2:+mm[4], mode:"cross" };
+
+    // 3) 장 범위: 1~3
+    mm = /^(\d+)\s*[~\-]\s*(\d+)$/.exec(rest);
+    if (mm) return { book, c1:+mm[1], v1:1, c2:+mm[2], v2:Infinity, mode:"chapters" };
+
+    // +) 한 장: 1
+    mm = /^(\d+)$/.exec(rest);
+    if (mm) return { book, c1:+mm[1], v1:1, c2:+mm[1], v2:Infinity, mode:"single" };
+
+    return null;
+  }
+
+  // 책 키 해석: bible.json의 키/BOOKS 목록과 유연 매칭
+  function resolveBookKeyForRange(bookName) {
+    // state.bible 키가 한글일 가능성 높음
+    if (state.bible && state.bible[bookName]) return bookName;
+
+    // 공백/대소문자 무시 비교
+    const norm = s => (s||"").replace(/\s+/g,'').toLowerCase();
+    if (state.bible) {
+      const hit = Object.keys(state.bible).find(k => norm(k) === norm(bookName));
+      if (hit) return hit;
+    }
+
+    // BOOKS(메타)에서 KO → 정확한 KO키로
+    const meta = getBookByKo(bookName);
+    if (meta && state.bible && state.bible[meta.ko]) return meta.ko;
+
+    return bookName; // 마지막 시도 (없으면 이후에서 실패 처리)
+  }
+
+  // 본문 수집
+  function collectRangeVerses(bookObj, refs, titleName) {
+    const out = [];
+    const { c1, v1=1, c2, v2=Infinity } = refs;
+    for (let c = c1; c <= c2; c++) {
+      const ch = bookObj?.[String(c)];
+      if (!ch) continue;
+      const startV = (c === c1) ? v1 : 1;
+      const endV   = (c === c2) ? v2 : Infinity;
+
+      const nums = Object.keys(ch).map(n=>+n).filter(n=>n>=startV && n<=endV).sort((a,b)=>a-b);
+      nums.forEach(vn => {
+        const text = String(ch[String(vn)] || "").trim();
+        if (text) out.push({ ref: `${titleName} ${c}:${vn}`, text });
+      });
+    }
+    return out;
+  }
+
+  // 렌더(별도 컨테이너)
+  function renderRangeVerses(list) {
+    const box = document.getElementById("rangeVerses");
+    if (!box) return;
+    if (!list.length) { box.innerHTML = `<p>본문이 없습니다.</p>`; return; }
+    box.innerHTML = list.map((v,i)=>`
+      <p data-ridx="${i}"><strong>${v.ref}</strong> ${v.text}</p>
+    `).join("");
+    highlightRangeLine();
+  }
+  function highlightRangeLine() {
+    const box = document.getElementById("rangeVerses");
+    if (!box) return;
+    [...box.querySelectorAll("p")].forEach(p => p.style.background = "transparent");
+    const cur = box.querySelector(`p[data-ridx="${rng.idx}"]`);
+    if (cur) {
+      cur.style.background = "rgba(255,255,0,0.18)";
+      cur.scrollIntoView({ behavior:"smooth", block:"center" });
+    }
+  }
+
+  // 로드 핸들러
+  async function onRangeLoad() {
+    const input = (document.getElementById("rangeInput")?.value || "").trim();
+    if (!input) { alert("구간을 입력하세요."); return; }
+    const refs = normalizeRangeInput(input);
+    if (!refs) { alert("입력 형식을 확인하세요.\n예) 창세기 1:1~3 / 창세기 1:31~2:3 / 창세기 1~3 / 창세기 1"); return; }
+
+    // 성경 데이터 확보
+    if (!state.bible) await loadBible();
+    if (!state.bible) { alert("bible.json 로딩 실패"); return; }
+
+    const bookKey = resolveBookKeyForRange(refs.book);
+    const bookObj = state.bible[bookKey];
+    if (!bookObj) { alert(`"${refs.book}"(을)를 찾을 수 없습니다.`); return; }
+
+    const verses = collectRangeVerses(bookObj, refs, refs.book);
+    if (!verses.length) { alert("해당 구간의 본문이 없습니다."); return; }
+
+    rng.queue = verses;
+    rng.idx = 0;
+    renderRangeVerses(verses);
+  }
+
+  // ====== TTS ======
+  function rangePlayAll() {
+    if (!rng.queue.length) { alert("먼저 본문을 불러오세요."); return; }
+    if (speechSynthesis.paused) { speechSynthesis.resume(); return; }
+    if (speechSynthesis.speaking) return;
+    rng.idx = 0;
+    speakRangeNext();
+  }
+  function speakRangeNext() {
+    if (rng.idx >= rng.queue.length) { speechSynthesis.cancel(); return; }
+    const rate  = parseFloat(document.getElementById("rangeRate")?.value || "1") || 1;
+    const vName = document.getElementById("rangeVoice")?.value;
+    const cur   = rng.queue[rng.idx];
+
+    const u = new SpeechSynthesisUtterance(`${cur.ref}. ${cur.text}`);
+    u.rate = rate;
+    const v = rng.voices.find(x => x.name === vName) ||
+              rng.voices.find(x => /ko-KR/i.test(x.lang)) ||
+              rng.voices[0];
+    if (v) u.voice = v;
+
+    u.onstart = () => highlightRangeLine();
+    u.onend   = () => { if (!speechSynthesis.paused) { rng.idx++; speakRangeNext(); } };
+    u.onerror = () => { rng.idx++; speakRangeNext(); };
+
+    speechSynthesis.speak(u);
+  }
+  function rangeTogglePause() {
+    if (!speechSynthesis.speaking) return;
+    if (speechSynthesis.paused) speechSynthesis.resume();
+    else speechSynthesis.pause();
+  }
+  function rangeStopAll() {
+    speechSynthesis.cancel();
+    rng.idx = 0;
+    highlightRangeLine();
+  }
+
+   
 })();
