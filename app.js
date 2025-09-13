@@ -757,26 +757,26 @@
 
       // ✅ 예측 커버리지 기반 칠하기
       const { k: predK, score } = bestPredictiveCoverage(targetJ, tmpHeard);
-      if (score >= 0.40) {  // 변동치2 0.45 -> 0.40 유사도 임계값
-        const limited = Math.min(predK, state.paintedPrefix + 5, targetJ.length); // 변동치 +5 -> +8 한 틱당 진행 제한을 +5 → +8로 늘려 더 빨리 끝까지 닿게 합니다.
+      if (score >= 0.40) {
+        const limited = Math.min(predK, state.paintedPrefix + 5, targetJ.length);
         schedulePaint(limited);
       }
 
       // 본문 전부 칠해지면 무조건 다음 절로 이동
-      // const fullyPainted = Math.max(state.paintedPrefix, state.pendingPaint) >= targetJ.length;
+      const fullyPainted = Math.max(state.paintedPrefix, state.pendingPaint) >= targetJ.length; // ← 복구/수정
       if (!state._advancing && fullyPainted) {
         state._advancing = true;
         setTimeout(() => {
           completeVerse(true);
           state._advancing = false;
-        }, 120);  // 변동치 120 -> 100
+        }, 120);
         return;
       }
 
       // 관대한 완료 판정 (보조 트리거)
       const overallRatio = state.paintedPrefix / Math.max(1, targetJ.length);
-      const need = 0.50; // 변동치1  비율 임계값 0.60 -> 0.50
-      const nearEnd = state.paintedPrefix >= targetJ.length - 15; // 변동치2 끝 근접범위 4자모 -> 10자모
+      const need = 0.50;
+      const nearEnd = state.paintedPrefix >= targetJ.length - 15;
       if (overallRatio >= need && nearEnd && !state._advancing) {
         state._advancing = true;
         completeVerse(true);
@@ -1218,8 +1218,7 @@
 
   /* =========================================================
    * [ADD] 성경 구간 입력 + 본문 표시 + 듣기(TTS)
-   * - UI는 screen-app 상단에 동적으로 삽입
-   * - 본문 결과는 별도 컨테이너(#rangeVerses)에 렌더 (기존 verseText와 충돌 없음)
+   * - index.html에 이미 #rangeReader가 존재하면 UI는 생성하지 않고, 이벤트만 바인딩
    * - 입력형식:
    *    1) "창세기 1:1~3"
    *    2) "창세기 1:31~2:3"
@@ -1231,52 +1230,24 @@
     queue: [],     // {ref, text}[]
     idx: 0,
     uiInstalled: false,
+    engine: 'web',     // 'web' | 'neural'
+    audio: null,       // HTMLAudioElement (neural 재생용)
   };
 
-  // UI 동적 삽입
+  // UI 준비/이벤트 바인딩 (이미 존재하는 경우만 바인딩)
   function installRangeUI() {
     if (rng.uiInstalled) return;
-    if (!scrApp) return;
-    const holder = document.createElement("section");
-    holder.id = "rangeReader";
-    holder.className = "card";
-    holder.innerHTML = `
-      <div class="row" style="align-items:center;gap:8px;flex-wrap:wrap">
-        <input id="rangeInput" class="input"
-          placeholder="예) 창세기 1:1~3 / 창세기 1:31~2:3 / 창세기 1~3 / 창세기 1장" />
-        <button id="rangeLoadBtn" class="btn">본문 불러오기</button>
-      </div>
-      <div class="row" style="margin-top:8px;align-items:center;gap:8px;flex-wrap:wrap">
-        <button id="rangePlay"  class="btn">▶ 재생</button>
-        <button id="rangePause" class="btn">⏸ 일시정지/재개</button>
-        <button id="rangeStop"  class="btn">■ 정지</button>
-        <label style="margin-left:12px">속도
-          <select id="rangeRate">
-            <option value="0.9">0.9</option>
-            <option value="1" selected>1.0</option>
-            <option value="1.1">1.1</option>
-            <option value="1.2">1.2</option>
-          </select>
-        </label>
-        <label style="margin-left:12px">음성
-          <select id="rangeVoice"></select>
-        </label>
-      </div>
-      <hr class="sep"/>
-      <div id="rangeVerses"></div>
-    `;
-    // 읽기 순위가 있으면 그 위에, 없으면 화면 상단에
-    const rank = document.getElementById("rankBoard");
-    if (rank && rank.parentElement) rank.parentElement.insertBefore(holder, rank);
-    else scrApp.prepend(holder);
 
-    // 이벤트 연결
+    // 이벤트 연결(요소가 있으면)
     document.getElementById("rangeLoadBtn")?.addEventListener("click", onRangeLoad);
     document.getElementById("rangePlay")?.addEventListener("click", rangePlayAll);
     document.getElementById("rangePause")?.addEventListener("click", rangeTogglePause);
     document.getElementById("rangeStop")?.addEventListener("click", rangeStopAll);
+    document.getElementById("rangeEngine")?.addEventListener("change", (e) => {
+      rng.engine = e.target.value;
+    });
 
-    // 음성 목록 준비
+    // 음성 목록 준비(브라우저 TTS 전용)
     if ("speechSynthesis" in window) {
       const populate = () => {
         rng.voices = speechSynthesis.getVoices() || [];
@@ -1300,13 +1271,16 @@
     rng.uiInstalled = true;
   }
 
-  // scrApp이 보여질 때 UI 설치 (로그인 후)
+  // 화면에 앱이 보일 때 설치 시도
   const obs = new MutationObserver(() => {
     if (scrApp?.classList.contains("show")) installRangeUI();
   });
   if (scrApp) {
     obs.observe(scrApp, { attributes: true, attributeFilter: ["class"] });
-    if (scrApp.classList.contains("show")) installRangeUI(); // 이미 보이는 경우
+    if (scrApp.classList.contains("show")) installRangeUI();
+  } else {
+    // 혹시 모를 경우 DOMContentLoaded에도 시도
+    window.addEventListener('DOMContentLoaded', installRangeUI);
   }
 
   // ---------- 입력 파싱 ----------
@@ -1346,21 +1320,18 @@
 
   // 책 키 해석: bible.json의 키/BOOKS 목록과 유연 매칭
   function resolveBookKeyForRange(bookName) {
-    // state.bible 키가 한글일 가능성 높음
     if (state.bible && state.bible[bookName]) return bookName;
 
-    // 공백/대소문자 무시 비교
     const norm = s => (s||"").replace(/\s+/g,'').toLowerCase();
     if (state.bible) {
       const hit = Object.keys(state.bible).find(k => norm(k) === norm(bookName));
       if (hit) return hit;
     }
 
-    // BOOKS(메타)에서 KO → 정확한 KO키로
     const meta = getBookByKo(bookName);
     if (meta && state.bible && state.bible[meta.ko]) return meta.ko;
 
-    return bookName; // 마지막 시도 (없으면 이후에서 실패 처리)
+    return bookName;
   }
 
   // 본문 수집
@@ -1410,7 +1381,6 @@
     const refs = normalizeRangeInput(input);
     if (!refs) { alert("입력 형식을 확인하세요.\n예) 창세기 1:1~3 / 창세기 1:31~2:3 / 창세기 1~3 / 창세기 1"); return; }
 
-    // 성경 데이터 확보
     if (!state.bible) await loadBible();
     if (!state.bible) { alert("bible.json 로딩 실패"); return; }
 
@@ -1426,21 +1396,57 @@
     renderRangeVerses(verses);
   }
 
-  // ====== TTS ======
+  // ====== TTS: 브라우저 / Neural 분기 ======
   function rangePlayAll() {
     if (!rng.queue.length) { alert("먼저 본문을 불러오세요."); return; }
-    if (speechSynthesis.paused) { speechSynthesis.resume(); return; }
-    if (speechSynthesis.speaking) return;
-    rng.idx = 0;
-    speakRangeNext();
+    const engineSel = document.getElementById("rangeEngine");
+    if (engineSel) rng.engine = engineSel.value || 'web';
+
+    if (rng.engine === 'web') {
+      if (!('speechSynthesis' in window)) { alert('이 브라우저는 TTS를 지원하지 않습니다.'); return; }
+      if (speechSynthesis.paused) { speechSynthesis.resume(); return; }
+      if (speechSynthesis.speaking) return;
+      rng.idx = 0;
+      speakRangeNext_web();
+    } else {
+      // neural
+      if (rng.audio && !rng.audio.paused) return;
+      rng.idx = 0;
+      speakRangeNext_neural();
+    }
   }
-  function speakRangeNext() {
-    if (rng.idx >= rng.queue.length) { speechSynthesis.cancel(); return; }
+
+  function rangeTogglePause() {
+    if (rng.engine === 'web') {
+      if (!('speechSynthesis' in window) || !speechSynthesis.speaking) return;
+      if (speechSynthesis.paused) speechSynthesis.resume();
+      else speechSynthesis.pause();
+    } else {
+      if (!rng.audio) return;
+      if (rng.audio.paused) rng.audio.play().catch(()=>{});
+      else rng.audio.pause();
+    }
+  }
+
+  function rangeStopAll() {
+    if (rng.engine === 'web') {
+      if ('speechSynthesis' in window) speechSynthesis.cancel();
+    } else {
+      try { rng.audio?.pause(); } catch(_) {}
+      rng.audio = null;
+    }
+    rng.idx = 0;
+    highlightRangeLine();
+  }
+
+  // ------ 브라우저 TTS ------
+  function speakRangeNext_web() {
+    if (rng.idx >= rng.queue.length) { if ('speechSynthesis' in window) speechSynthesis.cancel(); return; }
     const rate  = parseFloat(document.getElementById("rangeRate")?.value || "1") || 1;
     const vName = document.getElementById("rangeVoice")?.value;
     const cur   = rng.queue[rng.idx];
 
-    const u = new SpeechSynthesisUtterance(cur.text);
+    const u = new SpeechSynthesisUtterance(cur.text); // 본문만 읽기
     u.rate = rate;
     const v = rng.voices.find(x => x.name === vName) ||
               rng.voices.find(x => /ko-KR/i.test(x.lang)) ||
@@ -1448,21 +1454,54 @@
     if (v) u.voice = v;
 
     u.onstart = () => highlightRangeLine();
-    u.onend   = () => { if (!speechSynthesis.paused) { rng.idx++; speakRangeNext(); } };
-    u.onerror = () => { rng.idx++; speakRangeNext(); };
+    u.onend   = () => { if (!speechSynthesis.paused) { rng.idx++; speakRangeNext_web(); } };
+    u.onerror = () => { rng.idx++; speakRangeNext_web(); };
 
     speechSynthesis.speak(u);
   }
-  function rangeTogglePause() {
-    if (!speechSynthesis.speaking) return;
-    if (speechSynthesis.paused) speechSynthesis.resume();
-    else speechSynthesis.pause();
-  }
-  function rangeStopAll() {
-    speechSynthesis.cancel();
-    rng.idx = 0;
-    highlightRangeLine();
+
+  // ------ Neural TTS (서버 /api/tts) ------
+  async function speakRangeNext_neural() {
+    if (rng.idx >= rng.queue.length) { rangeStopAll(); return; }
+    const rate = parseFloat(document.getElementById("rangeRate")?.value || "1") || 1;
+    const voice = document.getElementById("neuralVoice")?.value || "ko-KR-SunHiNeural";
+    const cur = rng.queue[rng.idx];
+
+    try {
+      highlightRangeLine();
+      const res = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({
+          text: cur.text,
+          voice: voice,
+          rate: rate,               // 0.5~2.0
+          format: 'audio/mpeg',     // mp3
+          lang: 'ko-KR'
+        })
+      });
+      if (!res.ok) throw new Error('Neural TTS 실패');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+
+      if (rng.audio) { try { rng.audio.pause(); } catch(_) {} }
+      rng.audio = new Audio(url);
+      rng.audio.onended = () => {
+        URL.revokeObjectURL(url);
+        rng.idx++;
+        speakRangeNext_neural();
+      };
+      rng.audio.onerror = () => {
+        URL.revokeObjectURL(url);
+        rng.idx++;
+        speakRangeNext_neural();
+      };
+      await rng.audio.play();
+    } catch (e) {
+      console.warn('[Neural TTS] 오류:', e);
+      rng.idx++;
+      speakRangeNext_neural();
+    }
   }
 
-   
 })();
