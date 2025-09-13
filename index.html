@@ -22,7 +22,6 @@
   <script src="firebaseConfig.js" defer></script>
   <script src="app.js" defer></script>
 
-  <!-- (선택) 최소 스타일: 프로젝트에 이미 유사 클래스가 있으면 생략 가능 -->
   <style>
     ._card{background:#1a2250;border:1px solid #2a3155;border-radius:12px;padding:12px;margin:10px 0}
     ._row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
@@ -128,7 +127,7 @@
           <small id="micDb" class="muted">-∞ dB</small>
         </div>
 
-        <!-- 👇 음성매칭 엄격도 표시/선택 (UI만 추가) -->
+        <!-- 음성매칭 엄격도 -->
         <div id="strictControls" class="muted sm" style="margin:6px 0 0 0;">
           <span>매칭:</span>
           <label style="margin-left:6px;"><input type="radio" name="matchStrict" value="엄격"> 엄격</label>
@@ -136,7 +135,7 @@
           <label style="margin-left:6px;"><input type="radio" name="matchStrict" value="관대"> 관대</label>
         </div>
 
-        <!-- 버튼들: 고정형(오른쪽) ⟨ / 🎙️ / ⟩  -->
+        <!-- 버튼들 -->
         <div class="fab-row" style="
           position:fixed; right:12px; top:50%; transform:translateY(-50%);
           display:flex; flex-direction:column; gap:12px; align-items:center; z-index:1000;">
@@ -145,21 +144,19 @@
           <button id="btnNextVerse" class="fab" aria-label="다음 절">⟩</button>
         </div>
 
-        <!-- ‘해당절읽음’ 버튼: 오른쪽 정렬 & 초록색 -->
         <div style="margin-top:10px; display:flex; justify-content:flex-end;">
           <button id="btnMarkRead" style="background:#43d17a; color:#fff; padding:6px 12px; border-radius:6px;">
             해당절읽음
           </button>
         </div>
 
-        <!-- 통계줄 -->
         <div class="row between stats">
           <strong id="myStats">—</strong>
           <label class="muted"><input type="checkbox" id="autoAdvance" checked/> 절 완료 시 자동 이동</label>
         </div>
       </section>
 
-      <!-- ✅ [추가] 구간 입력 + 본문 표시 + 듣기(TTS) (순위 카드 위에 위치) -->
+      <!-- ✅ 구간 입력 + 본문 표시 + TTS -->
       <section id="rangeReader" class="_card">
         <div class="_row">
           <input id="rangeInput" class="_input"
@@ -180,6 +177,19 @@
           </label>
           <label style="margin-left:12px">음성
             <select id="rangeVoice"></select>
+          </label>
+          <label style="margin-left:12px">엔진
+            <select id="rangeEngine">
+              <option value="web" selected>브라우저 TTS</option>
+              <option value="neural">Neural TTS(서버)</option>
+            </select>
+          </label>
+          <label style="margin-left:12px">Neural 음성
+            <select id="neuralVoice">
+              <option value="ko-KR-SunHiNeural" selected>ko-KR-SunHiNeural</option>
+              <option value="ko-KR-InJoonNeural">ko-KR-InJoonNeural</option>
+              <option value="ko-KR-BongJinNeural">ko-KR-BongJinNeural</option>
+            </select>
           </label>
         </div>
         <hr class="_sep"/>
@@ -202,207 +212,9 @@
           <button id="btnCloseMatrix" class="btn small" type="button">닫기</button>
         </div>
         <div id="matrixWrap" class="matrix-wrap"></div>
-        <div class="muted smallprint">* 초록=완독 장, 회색=미완료 (가로 스크롤 가능)</div>
+        <div class="muted smallprint">* 초록=완독 장, 회색=미완료</div>
       </div>
     </div>
   </section>
-
-  <!-- ===== [추가 스크립트] 구간 파싱 + 본문 수집 + TTS ===== -->
-  <script>
-  (() => {
-    let voices = [];
-    let queue = []; // {ref, text}[]
-    let idx = 0;
-    let bibleCache = null;
-
-    // bible.json 로드
-    async function getBible() {
-      if (bibleCache) return bibleCache;
-      bibleCache = await fetch('bible.json', { cache: 'force-cache' }).then(r => r.json());
-      return bibleCache;
-    }
-
-    // 입력 파싱
-    /*
-      - "성경 창세기 1:1~3"
-      - "창세기 1:31~2:3"
-      - "창세기 1~3"
-      - "창세기 1장 1절~3절" / "창세기 1장~3장" / "창세기 1장"
-      - "창세기 1"
-    */
-    function parseRange(input) {
-      let s = (input || '').trim();
-      s = s.replace(/^성경\s*/,'');
-      s = s.replace(/[：]/g, ':');
-      s = s.replace(/\s+/g, ' ');
-      s = s.replace(/장/g, ':');
-      s = s.replace(/절/g, '');
-
-      const m = /^([^\d]+)\s+(.+)$/.exec(s);
-      if (!m) return null;
-      const book = m[1].trim();
-      const rest = m[2].trim();
-
-      // 1) 동장 절범위 1:1~3
-      let mm = /^(\d+)\s*:\s*(\d+)\s*[~\-]\s*(\d+)$/.exec(rest);
-      if (mm) return { book, c1:+mm[1], v1:+mm[2], c2:+mm[1], v2:+mm[3] };
-
-      // 2) 장跨 절범위 1:31~2:3
-      mm = /^(\d+)\s*:\s*(\d+)\s*[~\-]\s*(\d+)\s*:\s*(\d+)$/.exec(rest);
-      if (mm) return { book, c1:+mm[1], v1:+mm[2], c2:+mm[3], v2:+mm[4] };
-
-      // 3) 장 범위 1~3
-      mm = /^(\d+)\s*[~\-]\s*(\d+)$/.exec(rest);
-      if (mm) return { book, c1:+mm[1], v1:1, c2:+mm[2], v2:Infinity };
-
-      // +) 한 장 1
-      mm = /^(\d+)$/.exec(rest);
-      if (mm) return { book, c1:+mm[1], v1:1, c2:+mm[1], v2:Infinity };
-
-      return null;
-    }
-
-    // 책 키 해석(한글/영문/공백차이에 유연)
-    function resolveBookKey(bibleObj, raw) {
-      if (bibleObj[raw]) return raw;
-      const norm = s => (s||'').replace(/\s+/g,'').toLowerCase();
-      const hit = Object.keys(bibleObj).find(k => norm(k) === norm(raw));
-      // books.js에 KO 매핑이 있다면 참고 (선택)
-      if (!hit && window.BOOKS) {
-        const byKo = (window.BOOKS.find(b => norm(b.ko) === norm(raw)));
-        if (byKo && bibleObj[byKo.ko]) return byKo.ko;
-      }
-      return hit || raw;
-    }
-
-    // 본문 수집
-    function collectVerses(bookObj, refs, title) {
-      const out = [];
-      const { c1, v1=1, c2, v2=Infinity } = refs;
-      for (let c=c1; c<=c2; c++) {
-        const ch = bookObj?.[String(c)];
-        if (!ch) continue;
-        const startV = (c===c1) ? v1 : 1;
-        const endV   = (c===c2) ? v2 : Infinity;
-        const nums = Object.keys(ch).map(n=>+n).filter(n=>n>=startV && n<=endV).sort((a,b)=>a-b);
-        nums.forEach(vn => {
-          const text = String(ch[String(vn)] || '').trim();
-          if (text) out.push({ ref: `${title} ${c}:${vn}`, text });
-        });
-      }
-      return out;
-    }
-
-    // 렌더
-    function render(list) {
-      const box = document.getElementById('rangeVerses');
-      if (!box) return;
-      if (!list.length) { box.innerHTML = '<p>본문이 없습니다.</p>'; return; }
-      box.innerHTML = list.map((v,i)=>`<p data-ridx="${i}"><strong>${v.ref}</strong> ${v.text}</p>`).join('');
-      highlight();
-    }
-    function highlight() {
-      const box = document.getElementById('rangeVerses');
-      if (!box) return;
-      [...box.querySelectorAll('p')].forEach(p => p.style.background='transparent');
-      const cur = box.querySelector(`p[data-ridx="${idx}"]`);
-      if (cur) {
-        cur.style.background = 'rgba(255,255,0,0.18)';
-        cur.scrollIntoView({ behavior:'smooth', block:'center' });
-      }
-    }
-
-    // 로드 핸들러
-    async function onLoadRange() {
-      const val = (document.getElementById('rangeInput')?.value || '').trim();
-      if (!val) { alert('구간을 입력하세요. 예) 창세기 1:1~3 / 창세기 1:31~2:3 / 창세기 1~3 / 창세기 1장'); return; }
-      const refs = parseRange(val);
-      if (!refs) { alert('입력 형식을 확인하세요.'); return; }
-
-      const bible = await getBible();
-      const bookKey = resolveBookKey(bible, refs.book);
-      const bookObj = bible[bookKey];
-      if (!bookObj) { alert(`"${refs.book}"(을)를 찾을 수 없습니다.`); return; }
-
-      const verses = collectVerses(bookObj, refs, refs.book);
-      if (!verses.length) { alert('해당 구간의 본문이 없습니다.'); return; }
-
-      queue = verses;
-      idx = 0;
-      render(verses);
-    }
-
-    // TTS
-    function ttsPlayAll() {
-      if (!queue.length) { alert('먼저 본문을 불러오세요.'); return; }
-      if ('speechSynthesis' in window === false) { alert('이 브라우저는 TTS를 지원하지 않습니다.'); return; }
-      if (speechSynthesis.paused) { speechSynthesis.resume(); return; }
-      if (speechSynthesis.speaking) return;
-      idx = 0;
-      speakNext();
-    }
-    function speakNext() {
-      if (idx >= queue.length) { speechSynthesis.cancel(); return; }
-      const rate  = parseFloat(document.getElementById('rangeRate')?.value || '1') || 1;
-      const vName = document.getElementById('rangeVoice')?.value;
-      const cur   = queue[idx];
-
-      const u = new SpeechSynthesisUtterance(`cur.text`);
-      u.rate = rate;
-
-      const v = voices.find(x => x.name === vName) ||
-                voices.find(x => /ko-KR/i.test(x.lang)) ||
-                voices[0];
-      if (v) u.voice = v;
-
-      u.onstart = () => highlight();
-      u.onend   = () => { if (!speechSynthesis.paused) { idx++; speakNext(); } };
-      u.onerror = () => { idx++; speakNext(); };
-
-      speechSynthesis.speak(u);
-    }
-    function ttsTogglePause() {
-      if (!('speechSynthesis' in window) || !speechSynthesis.speaking) return;
-      if (speechSynthesis.paused) speechSynthesis.resume();
-      else speechSynthesis.pause();
-    }
-    function ttsStopAll() {
-      if (!('speechSynthesis' in window)) return;
-      speechSynthesis.cancel();
-      idx = 0;
-      highlight();
-    }
-
-    // 이벤트 연결 & 음성 목록 채우기
-    window.addEventListener('DOMContentLoaded', () => {
-      document.getElementById('rangeLoadBtn')?.addEventListener('click', onLoadRange);
-      document.getElementById('rangePlay')?.addEventListener('click', ttsPlayAll);
-      document.getElementById('rangePause')?.addEventListener('click', ttsTogglePause);
-      document.getElementById('rangeStop')?.addEventListener('click', ttsStopAll);
-
-      if ('speechSynthesis' in window) {
-        const populate = () => {
-          voices = speechSynthesis.getVoices() || [];
-          const sel = document.getElementById('rangeVoice');
-          if (!sel) return;
-          const ko = voices.filter(v => /ko-KR/i.test(v.lang));
-          const rest = voices.filter(v => !/ko-KR/i.test(v.lang));
-          sel.innerHTML = '';
-          [...ko, ...rest].forEach(v => {
-            const opt = document.createElement('option');
-            opt.value = v.name;
-            opt.textContent = `${v.name} (${v.lang})`;
-            sel.appendChild(opt);
-          });
-          if (ko.length) sel.value = ko[0].name;
-        };
-        populate();
-        speechSynthesis.onvoiceschanged = populate;
-      }
-    });
-  })();
-  </script>
-  <!-- ===== /추가 스크립트 ===== -->
-
 </body>
 </html>
