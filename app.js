@@ -1,4 +1,3 @@
-@@ -1,1468 +1,1468 @@
 /* 말씀읽기APP — Firebase 로그인/진도저장 + bible.json
    + 안드로이드 최적화 음성매칭
    + 마이크는 버튼으로만 ON/OFF
@@ -758,26 +757,26 @@
 
       // ✅ 예측 커버리지 기반 칠하기
       const { k: predK, score } = bestPredictiveCoverage(targetJ, tmpHeard);
-      if (score >= 0.40) {  // 변동치2 0.45 -> 0.40 유사도 임계값
-        const limited = Math.min(predK, state.paintedPrefix + 5, targetJ.length); // 변동치 +5 -> +8 한 틱당 진행 제한을 +5 → +8로 늘려 더 빨리 끝까지 닿게 합니다.
+      if (score >= 0.40) {
+        const limited = Math.min(predK, state.paintedPrefix + 5, targetJ.length);
         schedulePaint(limited);
       }
 
       // 본문 전부 칠해지면 무조건 다음 절로 이동
-      // const fullyPainted = Math.max(state.paintedPrefix, state.pendingPaint) >= targetJ.length;
+      const fullyPainted = Math.max(state.paintedPrefix, state.pendingPaint) >= targetJ.length; // <-- 복구
       if (!state._advancing && fullyPainted) {
         state._advancing = true;
         setTimeout(() => {
           completeVerse(true);
           state._advancing = false;
-        }, 120);  // 변동치 120 -> 100
+        }, 120);
         return;
       }
 
       // 관대한 완료 판정 (보조 트리거)
       const overallRatio = state.paintedPrefix / Math.max(1, targetJ.length);
-      const need = 0.50; // 변동치1  비율 임계값 0.60 -> 0.50
-      const nearEnd = state.paintedPrefix >= targetJ.length - 15; // 변동치2 끝 근접범위 4자모 -> 10자모
+      const need = 0.50;
+      const nearEnd = state.paintedPrefix >= targetJ.length - 15;
       if (overallRatio >= need && nearEnd && !state._advancing) {
         state._advancing = true;
         completeVerse(true);
@@ -1441,7 +1440,7 @@
     const vName = document.getElementById("rangeVoice")?.value;
     const cur   = rng.queue[rng.idx];
 
-    const u = new SpeechSynthesisUtterance(`${cur.ref}. ${cur.text}`);
+    // ✔️ 참조(책/장/절)는 읽지 않고 본문만 읽도록 유지
     const u = new SpeechSynthesisUtterance(cur.text);
     u.rate = rate;
     const v = rng.voices.find(x => x.name === vName) ||
@@ -1465,6 +1464,5 @@
     rng.idx = 0;
     highlightRangeLine();
   }
-
 
 })();
