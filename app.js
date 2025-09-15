@@ -757,32 +757,32 @@
 
       // ✅ 예측 커버리지 기반 칠하기
       const { k: predK, score } = bestPredictiveCoverage(targetJ, tmpHeard);
-      if (score >= 0.40) {  // 변동치2 0.45 -> 0.40 유사도 임계값
-        const limited = Math.min(predK, state.paintedPrefix + 5, targetJ.length); // 변동치 +5 -> +8 한 틱당 진행 제한을 +5 → +8로 늘려 더 빨리 끝까지 닿게 합니다.
       if (score >= 0.40) {
         const limited = Math.min(predK, state.paintedPrefix + 5, targetJ.length);
+      if (score >= 0.40) {  // 변동치2 0.45 -> 0.40 유사도 임계값
+        const limited = Math.min(predK, state.paintedPrefix + 5, targetJ.length); // 변동치 +5 -> +8 한 틱당 진행 제한을 +5 → +8로 늘려 더 빨리 끝까지 닿게 합니다.
         schedulePaint(limited);
       }
 
       // 본문 전부 칠해지면 무조건 다음 절로 이동
-      // const fullyPainted = Math.max(state.paintedPrefix, state.pendingPaint) >= targetJ.length;
       const fullyPainted = Math.max(state.paintedPrefix, state.pendingPaint) >= targetJ.length; // ← 복구/수정
+      // const fullyPainted = Math.max(state.paintedPrefix, state.pendingPaint) >= targetJ.length;
       if (!state._advancing && fullyPainted) {
         state._advancing = true;
         setTimeout(() => {
           completeVerse(true);
           state._advancing = false;
-        }, 120);  // 변동치 120 -> 100
         }, 120);
+        }, 120);  // 변동치 120 -> 100
         return;
       }
 
       // 관대한 완료 판정 (보조 트리거)
       const overallRatio = state.paintedPrefix / Math.max(1, targetJ.length);
-      const need = 0.50; // 변동치1  비율 임계값 0.60 -> 0.50
-      const nearEnd = state.paintedPrefix >= targetJ.length - 15; // 변동치2 끝 근접범위 4자모 -> 10자모
       const need = 0.50;
       const nearEnd = state.paintedPrefix >= targetJ.length - 15;
+      const need = 0.50; // 변동치1  비율 임계값 0.60 -> 0.50
+      const nearEnd = state.paintedPrefix >= targetJ.length - 15; // 변동치2 끝 근접범위 4자모 -> 10자모
       if (overallRatio >= need && nearEnd && !state._advancing) {
         state._advancing = true;
         completeVerse(true);
@@ -1224,9 +1224,9 @@
 
   /* =========================================================
    * [ADD] 성경 구간 입력 + 본문 표시 + 듣기(TTS)
+   * - index.html에 이미 #rangeReader가 존재하면 UI는 생성하지 않고, 이벤트만 바인딩
    * - UI는 screen-app 상단에 동적으로 삽입
    * - 본문 결과는 별도 컨테이너(#rangeVerses)에 렌더 (기존 verseText와 충돌 없음)
-   * - index.html에 이미 #rangeReader가 존재하면 UI는 생성하지 않고, 이벤트만 바인딩
    * - 입력형식:
    *    1) "창세기 1:1~3"
    *    2) "창세기 1:31~2:3"
@@ -1242,10 +1242,12 @@
     audio: null,       // HTMLAudioElement (neural 재생용)
   };
 
-  // UI 동적 삽입
   // UI 준비/이벤트 바인딩 (이미 존재하는 경우만 바인딩)
+  // UI 동적 삽입
   function installRangeUI() {
     if (rng.uiInstalled) return;
+
+    // 이벤트 연결(요소가 있으면)
     if (!scrApp) return;
     const holder = document.createElement("section");
     holder.id = "rangeReader";
@@ -1281,8 +1283,6 @@
     else scrApp.prepend(holder);
 
     // 이벤트 연결
-
-    // 이벤트 연결(요소가 있으면)
     document.getElementById("rangeLoadBtn")?.addEventListener("click", onRangeLoad);
     document.getElementById("rangePlay")?.addEventListener("click", rangePlayAll);
     document.getElementById("rangePause")?.addEventListener("click", rangeTogglePause);
@@ -1291,8 +1291,8 @@
       rng.engine = e.target.value;
     });
 
-    // 음성 목록 준비
     // 음성 목록 준비(브라우저 TTS 전용)
+    // 음성 목록 준비
     if ("speechSynthesis" in window) {
       const populate = () => {
         rng.voices = speechSynthesis.getVoices() || [];
@@ -1316,18 +1316,18 @@
     rng.uiInstalled = true;
   }
 
-  // scrApp이 보여질 때 UI 설치 (로그인 후)
   // 화면에 앱이 보일 때 설치 시도
+  // scrApp이 보여질 때 UI 설치 (로그인 후)
   const obs = new MutationObserver(() => {
     if (scrApp?.classList.contains("show")) installRangeUI();
   });
   if (scrApp) {
     obs.observe(scrApp, { attributes: true, attributeFilter: ["class"] });
-    if (scrApp.classList.contains("show")) installRangeUI(); // 이미 보이는 경우
     if (scrApp.classList.contains("show")) installRangeUI();
   } else {
     // 혹시 모를 경우 DOMContentLoaded에도 시도
     window.addEventListener('DOMContentLoaded', installRangeUI);
+    if (scrApp.classList.contains("show")) installRangeUI(); // 이미 보이는 경우
   }
 
   // ---------- 입력 파싱 ----------
@@ -1381,8 +1381,8 @@
     const meta = getBookByKo(bookName);
     if (meta && state.bible && state.bible[meta.ko]) return meta.ko;
 
-    return bookName; // 마지막 시도 (없으면 이후에서 실패 처리)
     return bookName;
+    return bookName; // 마지막 시도 (없으면 이후에서 실패 처리)
   }
 
   // 본문 수집
@@ -1448,12 +1448,10 @@
     renderRangeVerses(verses);
   }
 
-  // ====== TTS ======
   // ====== TTS: 브라우저 / Neural 분기 ======
+  // ====== TTS ======
   function rangePlayAll() {
     if (!rng.queue.length) { alert("먼저 본문을 불러오세요."); return; }
-    if (speechSynthesis.paused) { speechSynthesis.resume(); return; }
-    if (speechSynthesis.speaking) return;
     const engineSel = document.getElementById("rangeEngine");
     if (engineSel) rng.engine = engineSel.value || 'web';
 
@@ -1490,22 +1488,25 @@
       try { rng.audio?.pause(); } catch(_) {}
       rng.audio = null;
     }
+    if (speechSynthesis.paused) { speechSynthesis.resume(); return; }
+    if (speechSynthesis.speaking) return;
     rng.idx = 0;
-    speakRangeNext();
     highlightRangeLine();
+    speakRangeNext();
   }
-  function speakRangeNext() {
-    if (rng.idx >= rng.queue.length) { speechSynthesis.cancel(); return; }
 
   // ------ 브라우저 TTS ------
   function speakRangeNext_web() {
     if (rng.idx >= rng.queue.length) { if ('speechSynthesis' in window) speechSynthesis.cancel(); return; }
+  function speakRangeNext() {
+    if (rng.idx >= rng.queue.length) { speechSynthesis.cancel(); return; }
     const rate  = parseFloat(document.getElementById("rangeRate")?.value || "1") || 1;
     const vName = document.getElementById("rangeVoice")?.value;
     const cur   = rng.queue[rng.idx];
 
-    const u = new SpeechSynthesisUtterance(cur.text);
     const u = new SpeechSynthesisUtterance(cur.text); // 본문만 읽기
+    const u = new SpeechSynthesisUtterance(`${cur.ref}. ${cur.text}`);
+    const u = new SpeechSynthesisUtterance(cur.text);
     u.rate = rate;
     const v = rng.voices.find(x => x.name === vName) ||
               rng.voices.find(x => /ko-KR/i.test(x.lang)) ||
@@ -1513,22 +1514,13 @@
     if (v) u.voice = v;
 
     u.onstart = () => highlightRangeLine();
-    u.onend   = () => { if (!speechSynthesis.paused) { rng.idx++; speakRangeNext(); } };
-    u.onerror = () => { rng.idx++; speakRangeNext(); };
     u.onend   = () => { if (!speechSynthesis.paused) { rng.idx++; speakRangeNext_web(); } };
     u.onerror = () => { rng.idx++; speakRangeNext_web(); };
+    u.onend   = () => { if (!speechSynthesis.paused) { rng.idx++; speakRangeNext(); } };
+    u.onerror = () => { rng.idx++; speakRangeNext(); };
 
     speechSynthesis.speak(u);
   }
-  function rangeTogglePause() {
-    if (!speechSynthesis.speaking) return;
-    if (speechSynthesis.paused) speechSynthesis.resume();
-    else speechSynthesis.pause();
-  }
-  function rangeStopAll() {
-    speechSynthesis.cancel();
-    rng.idx = 0;
-    highlightRangeLine();
 
   // ------ Neural TTS (서버 /api/tts) ------
   async function speakRangeNext_neural() {
@@ -1572,7 +1564,16 @@
       rng.idx++;
       speakRangeNext_neural();
     }
+  function rangeTogglePause() {
+    if (!speechSynthesis.speaking) return;
+    if (speechSynthesis.paused) speechSynthesis.resume();
+    else speechSynthesis.pause();
+  }
+  function rangeStopAll() {
+    speechSynthesis.cancel();
+    rng.idx = 0;
+    highlightRangeLine();
   }
 
-   
+
 })();
